@@ -105,7 +105,6 @@ void sendCommand(um7::Comms* sensor, const um7::Accessor<RegT>& reg, std::string
   }
 }
 
-
 /**
  * Send configuration messages to the UM7, critically, to turn on the value outputs
  * which we require, and inject necessary configuration parameters.
@@ -113,6 +112,11 @@ void sendCommand(um7::Comms* sensor, const um7::Accessor<RegT>& reg, std::string
 void configureSensor(um7::Comms* sensor, ros::NodeHandle *private_nh)
 {
   um7::Registers r;
+  // sendCommand(sensor, r.cmd_get_firmware_version, "get firmware version");
+  // char fw[5];
+  // auto fw_uint32 = r.cmd_get_firmware_version.get(0);
+  // memcpy(fw, &fw_uint32, 4);
+  // ROS_INFO_STREAM("Firmware version: " << std::hex << fw_uint32);
 
   uint32_t comm_reg = (BAUD_115200 << COM_BAUD_START);
   r.communication.set(0, comm_reg);
@@ -120,6 +124,49 @@ void configureSensor(um7::Comms* sensor, ros::NodeHandle *private_nh)
   {
     throw std::runtime_error("Unable to set CREG_COM_SETTINGS.");
   }
+
+
+  // Options available using parameters)
+  uint32_t misc_config_reg = 0;  // initialize all options off
+
+  // Optionally disable mag updates in the sensor's EKF.
+  bool mag_updates;
+  private_nh->param<bool>("mag_updates", mag_updates, true);
+  ROS_ERROR_STREAM("MAG_UPDATES: " << mag_updates);
+  if (mag_updates)
+  {
+    misc_config_reg |= MAG_UPDATES_ENABLED;
+  }
+  else
+  {
+    ROS_WARN("Excluding magnetometer updates from EKF.");
+  }
+
+  // Optionally enable quaternion mode .
+  bool quat_mode;
+  private_nh->param<bool>("quat_mode", quat_mode, true);
+  if (quat_mode)
+  {
+    misc_config_reg |= QUATERNION_MODE_ENABLED;
+  }
+  else
+  {
+    ROS_WARN("Excluding quaternion mode.");
+  }
+  ROS_ERROR_STREAM("misc_config_reg: " << misc_config_reg);
+
+  r.misc_config.set(0, misc_config_reg);
+  if (!sensor->sendWaitAck(r.misc_config))
+  {
+    throw std::runtime_error("Unable to set CREG_MISC_SETTINGS.");
+  }
+
+  // Optionally disable performing a zero gyros command on driver startup.
+  bool zero_gyros;
+  private_nh->param<bool>("zero_gyros", zero_gyros, true);
+  if (zero_gyros) sendCommand(sensor, r.cmd_zero_gyros, "zero gyroscopes");
+  else ROS_WARN("Gyros will not be zeroed at startup.");
+
 
   // set the broadcast rate of the device
   int rate;
@@ -158,45 +205,6 @@ void configureSensor(um7::Comms* sensor, ros::NodeHandle *private_nh)
   {
     throw std::runtime_error("Unable to set CREG_COM_RATES6.");
   }
-
-
-  // Options available using parameters)
-  uint32_t misc_config_reg = 0;  // initialize all options off
-
-  // Optionally disable mag updates in the sensor's EKF.
-  bool mag_updates;
-  private_nh->param<bool>("mag_updates", mag_updates, true);
-  if (mag_updates)
-  {
-    misc_config_reg |= MAG_UPDATES_ENABLED;
-  }
-  else
-  {
-    ROS_WARN("Excluding magnetometer updates from EKF.");
-  }
-
-  // Optionally enable quaternion mode .
-  bool quat_mode;
-  private_nh->param<bool>("quat_mode", quat_mode, true);
-  if (quat_mode)
-  {
-    misc_config_reg |= QUATERNION_MODE_ENABLED;
-  }
-  else
-  {
-    ROS_WARN("Excluding quaternion mode.");
-  }
-
-  r.misc_config.set(0, misc_config_reg);
-  if (!sensor->sendWaitAck(r.misc_config))
-  {
-    throw std::runtime_error("Unable to set CREG_MISC_SETTINGS.");
-  }
-
-  // Optionally disable performing a zero gyros command on driver startup.
-  bool zero_gyros;
-  private_nh->param<bool>("zero_gyros", zero_gyros, true);
-  if (zero_gyros) sendCommand(sensor, r.cmd_zero_gyros, "zero gyroscopes");
 }
 
 
@@ -229,6 +237,38 @@ void publishMsgs(um7::Registers& r, ros::NodeHandle* imu_nh, sensor_msgs::Imu& i
   }
   static ros::Publisher rpy_pub = imu_nh->advertise<geometry_msgs::Vector3Stamped>("rpy", 1, false);
   static ros::Publisher temp_pub = imu_nh->advertise<std_msgs::Float32>("temperature", 1, false);
+  
+  static ros::Publisher mag_raw_pub = imu_nh->advertise<geometry_msgs::Vector3Stamped>("mag_raw", 1, false);
+  static ros::Publisher gyro_raw_pub = imu_nh->advertise<geometry_msgs::Vector3Stamped>("gyro_raw", 1, false);
+  static ros::Publisher accel_raw_pub = imu_nh->advertise<geometry_msgs::Vector3Stamped>("accel_raw", 1, false);
+
+  if (gyro_raw_pub.getNumSubscribers() > 0)
+  {
+    geometry_msgs::Vector3Stamped gyro_raw_msg;
+    gyro_raw_msg.header = imu_msg.header;
+    gyro_raw_msg.vector.x = r.gyro_raw.get(0);
+    gyro_raw_msg.vector.y = r.gyro_raw.get(1);
+    gyro_raw_msg.vector.z = r.gyro_raw.get(2);
+    gyro_raw_pub.publish(gyro_raw_msg);
+  }
+  if (accel_raw_pub.getNumSubscribers() > 0)
+  {
+    geometry_msgs::Vector3Stamped accel_raw_msg;
+    accel_raw_msg.header = imu_msg.header;
+    accel_raw_msg.vector.x = r.accel_raw.get(0);
+    accel_raw_msg.vector.y = r.accel_raw.get(1);
+    accel_raw_msg.vector.z = r.accel_raw.get(2);
+    accel_raw_pub.publish(accel_raw_msg);
+  }
+  if (mag_raw_pub.getNumSubscribers() > 0)
+  {
+    geometry_msgs::Vector3Stamped mag_raw_msg;
+    mag_raw_msg.header = imu_msg.header;
+    mag_raw_msg.vector.x = r.mag_raw.get(0);
+    mag_raw_msg.vector.y = r.mag_raw.get(1);
+    mag_raw_msg.vector.z = r.mag_raw.get(2);
+    mag_raw_pub.publish(mag_raw_msg);
+  }
 
   if (imu_pub.getNumSubscribers() > 0)
   {
@@ -239,10 +279,10 @@ void publishMsgs(um7::Registers& r, ros::NodeHandle* imu_nh, sensor_msgs::Imu& i
         // body-fixed frame NED to ENU: (x y z)->(x -y -z) or (w x y z)->(x -y -z w)
         // world frame      NED to ENU: (x y z)->(y  x -z) or (w x y z)->(y  x -z w)
         // world frame
-        imu_msg.orientation.w =  r.quat.get_scaled(2);
+        imu_msg.orientation.w =  r.quat.get_scaled(0);
         imu_msg.orientation.x =  r.quat.get_scaled(1);
-        imu_msg.orientation.y = -r.quat.get_scaled(3);
-        imu_msg.orientation.z =  r.quat.get_scaled(0);
+        imu_msg.orientation.y = -r.quat.get_scaled(2);
+        imu_msg.orientation.z = -r.quat.get_scaled(3);
 
         // body-fixed frame
         imu_msg.angular_velocity.x =  r.gyro.get_scaled(0);
