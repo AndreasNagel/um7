@@ -33,6 +33,7 @@
  *
  */
 #include <string>
+#include <algorithm>
 
 #include "geometry_msgs/Vector3Stamped.h"
 #include "ros/ros.h"
@@ -91,6 +92,28 @@ void configureVector3(um7::Comms* sensor, const um7::Accessor<RegT>& reg,
   }
 }
 
+void getRegisters(um7::Comms* sensor, um7::Registers* r) {
+  sensor->getWaitAck(r->mag_bias, r);
+  sensor->getWaitAck(r->accel_bias, r);
+  sensor->getWaitAck(r->mag_cal, r);
+  sensor->getWaitAck(r->accel_cal, r);
+  sensor->getWaitAck(r->gyro_trim, r);
+
+  ROS_INFO_STREAM("MAG_BIASES: " << "\t" << r->mag_bias.get(0) << "\t" << r->mag_bias.get(1) << "\t" << r->mag_bias.get(2));
+  ROS_INFO_STREAM("ACCEL_BIASES: " << "\t" << r->accel_bias.get(0) << "\t" << r->accel_bias.get(1) << "\t" << r->accel_bias.get(2));
+  ROS_INFO_STREAM("GYRO_TRIM: " << "\t" << r->gyro_trim.get(0) << "\t" << r->gyro_trim.get(1) << "\t" << r->gyro_trim.get(2));
+  
+  ROS_INFO_STREAM("Magnetometer Calibration Matrix: ");
+  ROS_INFO_STREAM("\t" << r->mag_cal.get(0) << "\t" << r->mag_cal.get(1) << "\t" << r->mag_cal.get(2));
+  ROS_INFO_STREAM("\t" << r->mag_cal.get(3) << "\t" << r->mag_cal.get(4) << "\t" << r->mag_cal.get(5));
+  ROS_INFO_STREAM("\t" << r->mag_cal.get(6) << "\t" << r->mag_cal.get(7) << "\t" << r->mag_cal.get(8));
+
+  ROS_INFO_STREAM("Accelerometer Calibration Matrix: ");
+  ROS_INFO_STREAM("\t" << r->accel_cal.get(0) << "\t" << r->accel_cal.get(1) << "\t" << r->accel_cal.get(2));
+  ROS_INFO_STREAM("\t" << r->accel_cal.get(3) << "\t" << r->accel_cal.get(4) << "\t" << r->accel_cal.get(5));
+  ROS_INFO_STREAM("\t" << r->accel_cal.get(6) << "\t" << r->accel_cal.get(7) << "\t" << r->accel_cal.get(8));
+}
+
 /**
  * Function generalizes the process of commanding the UM7 via one of its command
  * registers.
@@ -106,17 +129,33 @@ void sendCommand(um7::Comms* sensor, const um7::Accessor<RegT>& reg, std::string
 }
 
 /**
+ * Gets firmware version from um7
+ * @return std::string firmwareVersion
+ */
+std::string getFirmwareVersion(um7::Comms* sensor)
+{
+  um7::Registers registers;
+  const auto reg = registers.cmd_get_firmware_version;
+  ROS_INFO_STREAM("Getting firmware version...");
+  if (!sensor->sendWaitAck(reg, &registers))
+  {
+    throw std::runtime_error("Command to device failed.");
+  }
+  auto temp = reg.get(0);
+  std::reverse(std::begin(temp), std::end(temp));
+  std::string fwVer = std::string(std::begin(temp), std::end(temp));
+  ROS_INFO_STREAM("Firmware version: " << fwVer);
+  return fwVer;
+}
+
+/**
  * Send configuration messages to the UM7, critically, to turn on the value outputs
  * which we require, and inject necessary configuration parameters.
  */
 void configureSensor(um7::Comms* sensor, ros::NodeHandle *private_nh)
 {
   um7::Registers r;
-  // sendCommand(sensor, r.cmd_get_firmware_version, "get firmware version");
-  // char fw[5];
-  // auto fw_uint32 = r.cmd_get_firmware_version.get(0);
-  // memcpy(fw, &fw_uint32, 4);
-  // ROS_INFO_STREAM("Firmware version: " << std::hex << fw_uint32);
+  auto fw = getFirmwareVersion(sensor);
 
   uint32_t comm_reg = (BAUD_115200 << COM_BAUD_START);
   r.communication.set(0, comm_reg);
@@ -205,6 +244,8 @@ void configureSensor(um7::Comms* sensor, ros::NodeHandle *private_nh)
   {
     throw std::runtime_error("Unable to set CREG_COM_RATES6.");
   }
+
+  getRegisters(sensor, &r);
 }
 
 
