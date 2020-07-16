@@ -48,6 +48,7 @@
 
 #include <string>
 #include <stdexcept>
+#include <array>
 
 #include "um7/firmware_registers.h"
 
@@ -55,8 +56,9 @@
 #define TO_DEGREES (180.0 / M_PI)
 
 // This excludes the command registers, which are always sent
-// and received with no data.
-#define NUM_REGISTERS (DATA_REG_START_ADDRESS + DATA_ARRAY_SIZE)
+// and received with no data. (but includes firmware version "register")
+#define NUM_REGISTERS (COMMAND_START_ADDRESS + 1)
+// #define NUM_REGISTERS (DATA_REG_START_ADDRESS + DATA_ARRAY_SIZE)
 
 
 namespace um7
@@ -159,15 +161,20 @@ class Registers
 {
   public:
     Registers() :
-      gyro_raw(this, DREG_GYRO_RAW_XY, 3),
-      accel_raw(this, DREG_ACCEL_RAW_XY, 3),
-      mag_raw(this, DREG_MAG_RAW_XY, 3),
-      gyro(this, DREG_GYRO_PROC_X, 3, 1.0 * TO_RADIANS),
       accel(this, DREG_ACCEL_PROC_X, 3, 9.80665),
+      accel_bias(this, CREG_ACCEL_BIAS_X, 3),
+      accel_cal(this, CREG_ACCEL_CAL1_1, 9),
+      accel_raw(this, DREG_ACCEL_RAW_XY, 3),
+      gyro(this, DREG_GYRO_PROC_X, 3, 1.0 * TO_RADIANS),
+      gyro_raw(this, DREG_GYRO_RAW_XY, 3),
+      gyro_trim(this, CREG_GYRO_TRIM_X, 3),
       mag(this, DREG_MAG_PROC_X, 3, 1.0),
+      mag_bias(this, CREG_MAG_BIAS_X, 3),
+      mag_cal(this, CREG_MAG_CAL1_1, 9),
+      mag_raw(this, DREG_MAG_RAW_XY, 3),
+      temperature(this, DREG_TEMPERATURE, 1),
       euler(this, DREG_EULER_PHI_THETA, 3, 0.0109863 * TO_RADIANS),
       quat(this, DREG_QUAT_AB, 4, 0.0000335693),
-      temperature(this, DREG_TEMPERATURE, 1),
       communication(this, CREG_COM_SETTINGS, 1),
       comrate2(this, CREG_COM_RATES2, 1),
       comrate4(this, CREG_COM_RATES4, 1),
@@ -175,7 +182,7 @@ class Registers
       comrate6(this, CREG_COM_RATES6, 1),
       misc_config(this, CREG_MISC_SETTINGS, 1),
       status(this, CREG_COM_RATES6, 1),
-      mag_bias(this, CREG_MAG_BIAS_X, 3),
+      cmd_get_firmware_version(this, CHR_GET_FW_VERSION),
       cmd_zero_gyros(this, CHR_ZERO_GYROS),
       cmd_reset_ekf(this, CHR_RESET_EKF),
       cmd_set_mag_ref(this, CHR_SET_MAG_REFERENCE)
@@ -186,16 +193,18 @@ class Registers
     // Data
     const Accessor<int16_t> gyro_raw, accel_raw, euler, mag_raw, quat;
 
-    const Accessor<float> gyro, accel, mag, temperature;
+    const Accessor<float> gyro, gyro_trim, accel, mag, temperature;
 
     // Configs
     const Accessor<uint32_t> communication, misc_config, status, comrate2,
                             comrate4, comrate5, comrate6;
 
-    const Accessor<float>  mag_bias;
+    const Accessor<float>  mag_bias, mag_cal, accel_cal, accel_bias;
 
     // Commands
     const Accessor<uint32_t> cmd_zero_gyros, cmd_reset_ekf, cmd_set_mag_ref;
+    const Accessor<std::array<char, 4>> cmd_get_firmware_version;
+    
 
     void write_raw(uint8_t register_index, std::string data)
     {
@@ -206,7 +215,7 @@ class Registers
       memcpy(&raw_[register_index], data.c_str(), data.length());
     }
 
-  private:
+  // private:
     uint32_t raw_[NUM_REGISTERS];
 
   friend class Accessor_;

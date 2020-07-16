@@ -69,8 +69,10 @@ public:
   int16_t receive(Registers* r);
 
   void send(const Accessor_& a) const;
+  void get(const Accessor_& r) const;
 
-  bool sendWaitAck(const Accessor_& a);
+  bool sendWaitAck(const Accessor_& a, Registers* = NULL);
+  bool getWaitAck(const Accessor_& r, Registers* registers);
 
   static const uint8_t PACKET_HAS_DATA;
   static const uint8_t PACKET_IS_BATCH;
@@ -79,7 +81,7 @@ public:
 
   static std::string checksum(const std::string& s);
 
-  static std::string message(uint8_t address, std::string data);
+  static std::string message(uint8_t address, std::string data, uint8_t type);
 
 private:
   bool first_spin_;
