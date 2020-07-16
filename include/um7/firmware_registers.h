@@ -60,6 +60,18 @@
 #define CREG_MAG_BIAS_X       24
 #define CREG_MAG_BIAS_Y       25
 #define CREG_MAG_BIAS_Z       26
+#define CREG_ACCEL_CAL1_1     27
+#define CREG_ACCEL_CAL1_2     28
+#define CREG_ACCEL_CAL1_3     29
+#define CREG_ACCEL_CAL2_1     30
+#define CREG_ACCEL_CAL2_2     31
+#define CREG_ACCEL_CAL2_3     32
+#define CREG_ACCEL_CAL3_1     33
+#define CREG_ACCEL_CAL3_2     34
+#define CREG_ACCEL_CAL3_3     35
+#define CREG_ACCEL_BIAS_X     36
+#define CREG_ACCEL_BIAS_Y     37
+#define CREG_ACCEL_BIAS_Z     38
 
 // Bit definitions for COM_SETTINGS register
 #define COM_BAUD_MASK       0x0F      // Uses 4 bits
@@ -223,8 +235,8 @@
 #define CHR_RESET_TO_FACTORY   (COMMAND_START_ADDRESS + 2)  // Causes the UM6 to load default factory settings
 #define CHR_ZERO_GYROS         (COMMAND_START_ADDRESS + 3)
 #define CHR_SET_HOME_POSITION  (COMMAND_START_ADDRESS + 4)
-#define CHR_FACTORY_COMMIT     (COMMAND_START_ADDRESS + 5)
-#define CHR_SET_MAG_REFERENCE  (COMMAND_START_ADDRESS + 6)
+#define CHR_FACTORY_COMMIT     (COMMAND_START_ADDRESS + 6)
+#define CHR_SET_MAG_REFERENCE  (COMMAND_START_ADDRESS + 7)
 #define CHR_RESET_EKF          (COMMAND_START_ADDRESS + 9)
 
 // Some definitions for working with COM events
