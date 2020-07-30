@@ -1,15 +1,6 @@
 <launch>
-    <node name="imu" pkg="um7" type="um7_driver" output="screen" respawn="true">
-        <rosparam param="quat_mode">True</rosparam>
-        <rosparam param="tf_ned_to_enu">False</rosparam>
-        <rosparam param="mag_updates">False</rosparam>
-        <rosparam param="zero_gyros">True</rosparam>
-        <rosparam param="update_rate">50</rosparam>
-    </node>
-    <node name="rviz" pkg="rviz" type="rviz" output="screen" args="-d $(find um7)/launch/conf.rviz" >
-    </node>
-    <node  name="tf_map" pkg="tf" type="static_transform_publisher" args="0 0 0 0 0 0 1 world map 100" />
-    <node  name="tf_base" pkg="tf" type="static_transform_publisher" args="0 0 0 0 0 0 1 map base_link 100" />
-    <node  name="tf_imu" pkg="tf" type="static_transform_publisher" args="0 0 0 0 0 0 1 base_link imu_link 100" />
-    <node name="rosbag" pkg="rosbag" type="record" args="-o /home/naksu/imulogs/ /imu/accel_raw /imu/data /imu/gyro_raw /imu/mag /imu/mag_raw /imu/temperature"/>
+
+    <include file="$(find um7)/launch/imu.launch" />
+
+    <node name="rosbag" pkg="rosbag" type="record" args="-o /home/naksu/imulogs/ /imu/accel_raw /imu/data /imu/gyro_raw /imu/gyro_bias /imu/mag /imu/mag_raw /imu/temperature /imu/health"/>
 </launch>

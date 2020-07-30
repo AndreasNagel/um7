@@ -133,6 +133,8 @@
 #define RATE6_POSE_START             24
 #define RATE6_HEALTH_MASK          0x0F
 #define RATE6_HEALTH_START           16
+#define RATE6_GYRO_BIAS_MASK          8
+#define RATE6_GYRO_BIAS_START         8
 
 #define RATE7_NMEA_HEALTH_MASK     0x0F
 #define RATE7_NMEA_HEALTH_START      28
@@ -208,6 +210,9 @@
 #define DREG_GPS_SAT_7_8          134
 #define DREG_GPS_SAT_9_10         135
 #define DREG_GPS_SAT_11_12        136
+#define DREG_GYRO_BIAS_X          137
+#define DREG_GYRO_BIAS_Y          138
+#define DREG_GYRO_BIAS_Z          139
 
 // Bit definitions for sensor health register
 #define HEALTH_SATS_USED_MASK      0x3F  // Uses 6 bits

@@ -170,6 +170,7 @@ class Registers
       gyro_trim(this, CREG_GYRO_TRIM_X, 3),
       mag(this, DREG_MAG_PROC_X, 3, 1.0),
       mag_bias(this, CREG_MAG_BIAS_X, 3),
+      gyro_bias(this, DREG_GYRO_BIAS_X, 3),
       mag_cal(this, CREG_MAG_CAL1_1, 9),
       mag_raw(this, DREG_MAG_RAW_XY, 3),
       temperature(this, DREG_TEMPERATURE, 1),
@@ -181,7 +182,7 @@ class Registers
       comrate5(this, CREG_COM_RATES5, 1),
       comrate6(this, CREG_COM_RATES6, 1),
       misc_config(this, CREG_MISC_SETTINGS, 1),
-      status(this, CREG_COM_RATES6, 1),
+      status(this, DREG_HEALTH, 1),
       cmd_get_firmware_version(this, CHR_GET_FW_VERSION),
       cmd_zero_gyros(this, CHR_ZERO_GYROS),
       cmd_reset_ekf(this, CHR_RESET_EKF),
@@ -199,7 +200,7 @@ class Registers
     const Accessor<uint32_t> communication, misc_config, status, comrate2,
                             comrate4, comrate5, comrate6;
 
-    const Accessor<float>  mag_bias, mag_cal, accel_cal, accel_bias;
+    const Accessor<float>  mag_bias, mag_cal, accel_cal, accel_bias, gyro_bias;
 
     // Commands
     const Accessor<uint32_t> cmd_zero_gyros, cmd_reset_ekf, cmd_set_mag_ref;

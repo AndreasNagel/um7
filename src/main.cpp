@@ -36,6 +36,9 @@
 #include <algorithm>
 
 #include "geometry_msgs/Vector3Stamped.h"
+#include "diagnostic_msgs/DiagnosticStatus.h"
+#include "diagnostic_msgs/KeyValue.h"
+#include "std_msgs/Int64.h"
 #include "ros/ros.h"
 #include "sensor_msgs/Imu.h"
 #include "sensor_msgs/MagneticField.h"
@@ -44,6 +47,7 @@
 #include "std_msgs/Header.h"
 #include "um7/comms.h"
 #include "um7/registers.h"
+// #include "um7/firmware_registers.h"
 #include "um7/Reset.h"
 
 const char VERSION[10] = "0.0.2";   // um7_driver version
@@ -231,6 +235,7 @@ void configureSensor(um7::Comms* sensor, ros::NodeHandle *private_nh)
     throw std::runtime_error("Unable to set CREG_COM_RATES4.");
   }
 
+
   uint32_t misc_rate = (rate_bits << RATE5_EULER_START) | (rate_bits << RATE5_QUAT_START);
   r.comrate5.set(0, misc_rate);
   if (!sensor->sendWaitAck(r.comrate5))
@@ -243,6 +248,13 @@ void configureSensor(um7::Comms* sensor, ros::NodeHandle *private_nh)
   if (!sensor->sendWaitAck(r.comrate6))
   {
     throw std::runtime_error("Unable to set CREG_COM_RATES6.");
+  }
+
+  uint32_t gyro_bias_rate = (rate_bits << RATE6_GYRO_BIAS_START);
+  r.comrate6.set(0, gyro_bias_rate);
+  if (!sensor->sendWaitAck(r.comrate6))
+  {
+    throw std::runtime_error("Unable to set CREG_COM_RATES4.");
   }
 
   getRegisters(sensor, &r);
@@ -281,7 +293,19 @@ void publishMsgs(um7::Registers& r, ros::NodeHandle* imu_nh, sensor_msgs::Imu& i
   
   static ros::Publisher mag_raw_pub = imu_nh->advertise<geometry_msgs::Vector3Stamped>("mag_raw", 1, false);
   static ros::Publisher gyro_raw_pub = imu_nh->advertise<geometry_msgs::Vector3Stamped>("gyro_raw", 1, false);
+  static ros::Publisher gyro_bias_pub = imu_nh->advertise<geometry_msgs::Vector3Stamped>("gyro_bias", 1, false);
   static ros::Publisher accel_raw_pub = imu_nh->advertise<geometry_msgs::Vector3Stamped>("accel_raw", 1, false);
+  static ros::Publisher health_pub = imu_nh->advertise<diagnostic_msgs::DiagnosticStatus>("health", 1, false);
+
+  if (gyro_bias_pub.getNumSubscribers() > 0)
+  {
+    geometry_msgs::Vector3Stamped gyro_bias_msg;
+    gyro_bias_msg.header = imu_msg.header;
+    gyro_bias_msg.vector.x = r.gyro_bias.get(0);
+    gyro_bias_msg.vector.y = r.gyro_bias.get(1);
+    gyro_bias_msg.vector.z = r.gyro_bias.get(2);
+    gyro_bias_pub.publish(gyro_bias_msg);
+  }
 
   if (gyro_raw_pub.getNumSubscribers() > 0)
   {
@@ -309,6 +333,51 @@ void publishMsgs(um7::Registers& r, ros::NodeHandle* imu_nh, sensor_msgs::Imu& i
     mag_raw_msg.vector.y = r.mag_raw.get(1);
     mag_raw_msg.vector.z = r.mag_raw.get(2);
     mag_raw_pub.publish(mag_raw_msg);
+  }
+
+  if (health_pub.getNumSubscribers() > 0)
+  {
+    diagnostic_msgs::DiagnosticStatus health_msg;
+    health_msg.level = 0;
+    health_msg.name = "imu";
+    diagnostic_msgs::KeyValue comOvf;
+    diagnostic_msgs::KeyValue accelerometer_norm;
+    diagnostic_msgs::KeyValue magnetometer_norm;
+    diagnostic_msgs::KeyValue accelerometer;
+    diagnostic_msgs::KeyValue gyro;
+    diagnostic_msgs::KeyValue magnet;
+
+    comOvf.key = "COM Overflow";
+    accelerometer_norm.key = "accelerometer norm";
+    magnetometer_norm.key = "magnetometer norm";
+    accelerometer.key = "accelerometer init";
+    gyro.key = "gyro init";
+    magnet.key = "magnet init";
+    auto status_reg = r.status.get(0);
+    comOvf.value = status_reg & HEALTH_COM_OVERFLOW;  // saved as a byte, not a string.
+    accelerometer_norm.value = status_reg & HEALTH_ACCEL_NORM;  // saved as a byte, not a string.
+    magnetometer_norm.value = status_reg & HEALTH_MAG_NORM;  // saved as a byte, not a string.
+    accelerometer.value = status_reg & HEALTH_ACCEL;  // saved as a byte, not a string.
+    gyro.value = status_reg & HEALTH_GYRO;  // saved as a byte, not a string.
+    magnet.value = status_reg & HEALTH_MAG;  // saved as a byte, not a string.
+
+    
+
+    health_msg.values.push_back(comOvf);
+    health_msg.values.push_back(accelerometer_norm);
+    health_msg.values.push_back(magnetometer_norm);
+    health_msg.values.push_back(accelerometer);
+    health_msg.values.push_back(gyro);
+    health_msg.values.push_back(magnet);
+
+    for (size_t i = 0; i < health_msg.values.size(); i++)
+    {
+      if (health_msg.values[i].value.at(0)) {
+        // ROS_INFO_STREAM("" << health_msg.values[i].key << " is " << std::hex << static_cast<int>(health_msg.values[i].value.c_str()[0]) << " <<");
+        health_msg.level |= (1 << i);
+      }
+    }  
+    health_pub.publish(health_msg);
   }
 
   if (imu_pub.getNumSubscribers() > 0)
