@@ -1,0 +1,6 @@
+<launch>
+
+    <include file="$(find um7)/launch/imu.launch" />
+
+    <node name="rosbag" pkg="rosbag" type="record" args="-o /home/naksu/imulogs/ /imu/accel_raw /imu/data /imu/gyro_raw /imu/gyro_bias /imu/mag /imu/mag_raw /imu/temperature /imu/health"/>
+</launch>

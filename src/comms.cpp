@@ -1,11 +1,11 @@
 /**
  *
  *  \file
- *  \brief      Implementation of Comms class methods to handle reading and 
+ *  \brief      Implementation of Comms class methods to handle reading and
  *              writing to the UM7 serial interface.
  *  \author     Mike Purvis <mpurvis@clearpathrobotics.com>
  *  \copyright  Copyright (c) 2013, Clearpath Robotics, Inc.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
  *     * Redistributions of source code must retain the above copyright
@@ -16,7 +16,7 @@
  *     * Neither the name of Clearpath Robotics, Inc. nor the
  *       names of its contributors may be used to endorse or promote products
  *       derived from this software without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
  * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -27,8 +27,8 @@
  * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- * 
- * Please send comments, questions, or patches to code@clearpathrobotics.com 
+ *
+ * Please send comments, questions, or patches to code@clearpathrobotics.com
  *
  */
 
@@ -117,7 +117,12 @@ int16_t Comms::receive(Registers* registers = NULL)
     {
       ROS_DEBUG("Received packet %02x without data.", address);
     }
-
+    std::stringstream hexData;
+    BOOST_FOREACH(uint8_t byte, data)
+    {
+      hexData << std::hex << static_cast<int>(byte);
+    }
+    ROS_DEBUG_STREAM("DATA: " << hexData.str());
     // Compare computed checksum with transmitted value.
     uint16_t checksum_transmitted;
     if (serial_->read(reinterpret_cast<uint8_t*>(&checksum_transmitted), 2) != 2)
@@ -134,6 +139,7 @@ int16_t Comms::receive(Registers* registers = NULL)
     // Note that byte-order correction (as necessary) happens at access-time
     if ((data.length() > 0) && registers)
     {
+      // ROS_DEBUG_STREAM("WRITING RAW DATA: " << data << " to address " <<  std::hex << static_cast<int>(address) << " to registers at: " << registers);
       registers->write_raw(address, data);
     }
 
@@ -165,9 +171,26 @@ std::string Comms::checksum(const std::string& s)
   return out;
 }
 
-std::string Comms::message(uint8_t address, std::string data)
+std::string Comms::message(uint8_t address, std::string data, uint8_t type)
 {
+
+  std::stringstream ss(std::stringstream::out | std::stringstream::binary);
+  ss << "snp" << type << address << data;
+  std::string output = ss.str();
+  std::string c = checksum(output);
+  ss << c;
+  output = ss.str();
+  ROS_DEBUG_STREAM("Message type: "<< std::hex << static_cast<int>(type));
+  ROS_DEBUG("Generated message %02x of overall length %zd.", address, output.length());
+  return output;
+}
+
+void Comms::send(const Accessor_& r) const
+{
+  uint8_t address = r.index;
   uint8_t type = 0;
+
+  std::string data(reinterpret_cast<char*>(r.raw()), ceil(r.length * r.width / 4.0) * 4);
   if (data.length() > 0)
   {
     type |= PACKET_HAS_DATA;
@@ -177,25 +200,12 @@ std::string Comms::message(uint8_t address, std::string data)
     type |= PACKET_IS_BATCH;
     type |= (data.length() / 4) << PACKET_BATCH_LENGTH_OFFSET;
   }
-
-  std::stringstream ss(std::stringstream::out | std::stringstream::binary);
-  ss << "snp" << type << address << data;
-  std::string output = ss.str();
-  std::string c = checksum(output);
-  ss << c;
-  output = ss.str();
-  ROS_DEBUG("Generated message %02x of overall length %zd.", address, output.length());
-  return output;
+  ROS_DEBUG_STREAM("Data length: " << data.length());
+  ROS_DEBUG_STREAM("Type: " << std::hex << static_cast<int>(type));
+  serial_->write(message(r.index, data, type));
 }
 
-void Comms::send(const Accessor_& r) const
-{
-  uint8_t address = r.index;
-  std::string data(reinterpret_cast<char*>(r.raw()), r.length * 4);
-  serial_->write(message(r.index, data));
-}
-
-bool Comms::sendWaitAck(const Accessor_& r)
+bool Comms::sendWaitAck(const Accessor_& r, Registers* registers)
 {
   const uint8_t tries = 5;
   for (uint8_t t = 0; t < tries; t++)
@@ -204,7 +214,49 @@ bool Comms::sendWaitAck(const Accessor_& r)
     const uint8_t listens = 20;
     for (uint8_t i = 0; i < listens; i++)
     {
-      int16_t received = receive();
+      int16_t received = receive(registers);
+      if (received == r.index)
+      {
+        ROS_DEBUG("Message %02x ack received.", received);
+        return true;
+      }
+      else if (received == -1)
+      {
+        ROS_DEBUG("Serial read timed out waiting for ack. Attempting to retransmit.");
+        break;
+      }
+    }
+  }
+  return false;
+}
+
+void Comms::get(const Accessor_& r) const
+{
+  uint8_t address = r.index;
+  uint8_t type = 0;
+  uint8_t registers_len = ceil(r.length * r.width / 4.0);
+  if (registers_len > 1)
+  {
+    type |= PACKET_IS_BATCH;
+    type |= (registers_len) << PACKET_BATCH_LENGTH_OFFSET;
+  }
+  ROS_DEBUG_STREAM("Batch length: " << static_cast<int>(registers_len));
+  ROS_DEBUG_STREAM("Type: " << std::hex << static_cast<int>(type));
+  
+  std::string data;
+  serial_->write(message(r.index, data, type));
+}
+
+bool Comms::getWaitAck(const Accessor_& r, Registers* registers)
+{
+  const uint8_t tries = 5;
+  for (uint8_t t = 0; t < tries; t++)
+  {
+    get(r);
+    const uint8_t listens = 20;
+    for (uint8_t i = 0; i < listens; i++)
+    {
+      int16_t received = receive(registers);
       if (received == r.index)
       {
         ROS_DEBUG("Message %02x ack received.", received);

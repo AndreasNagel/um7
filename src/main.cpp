@@ -8,7 +8,7 @@
  *  \copyright  Copyright (c) 2013, Clearpath Robotics, Inc.
  *  \author     Alex Brown <rbirac@cox.net>		    (adapted to UM7)
  *  \copyright  Copyright (c) 2015, Alex Brown.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
  *     * Redistributions of source code must retain the above copyright
@@ -19,39 +19,51 @@
  *     * Neither the name of Clearpath Robotics, Inc. nor the
  *       names of its contributors may be used to endorse or promote products
  *       derived from this software without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
  * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL CLEARPATH ROBOTICS, INC. OR ALEX BROWN BE LIABLE 
+ * DISCLAIMED. IN NO EVENT SHALL CLEARPATH ROBOTICS, INC. OR ALEX BROWN BE LIABLE
  * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
  * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
  * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
  * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- * 
- * Please send comments, questions, or patches to Alex Brown  rbirac@cox.net
  *
  */
+#include <string>
+#include <algorithm>
 
 #include "geometry_msgs/Vector3Stamped.h"
+#include "diagnostic_msgs/DiagnosticStatus.h"
+#include "diagnostic_msgs/KeyValue.h"
+#include "std_msgs/Int64.h"
 #include "ros/ros.h"
 #include "sensor_msgs/Imu.h"
-#include "serial/serial.h"            // must install serial library from apt-get
+#include "sensor_msgs/MagneticField.h"
+#include "serial/serial.h"
 #include "std_msgs/Float32.h"
 #include "std_msgs/Header.h"
 #include "um7/comms.h"
 #include "um7/registers.h"
+// #include "um7/firmware_registers.h"
 #include "um7/Reset.h"
-#include <string>
 
-float covar[9];     // orientation covariance values
 const char VERSION[10] = "0.0.2";   // um7_driver version
 
 // Don't try to be too clever. Arrival of this message triggers
 // us to publish everything we have.
 const uint8_t TRIGGER_PACKET = DREG_EULER_PHI_THETA;
+
+namespace OutputAxisOptions
+{
+  enum OutputAxisOption
+  {
+    DEFAULT, ENU, ROBOT_FRAME
+  };
+}
+typedef OutputAxisOptions::OutputAxisOption OutputAxisOption;
 
 /**
  * Function generalizes the process of writing an XYZ vector into consecutive
@@ -59,7 +71,7 @@ const uint8_t TRIGGER_PACKET = DREG_EULER_PHI_THETA;
  */
 template<typename RegT>
 void configureVector3(um7::Comms* sensor, const um7::Accessor<RegT>& reg,
-    std::string param, std::string human_name)
+                      std::string param, std::string human_name)
 {
   if (reg.length != 3)
   {
@@ -84,6 +96,28 @@ void configureVector3(um7::Comms* sensor, const um7::Accessor<RegT>& reg,
   }
 }
 
+void getRegisters(um7::Comms* sensor, um7::Registers* r) {
+  sensor->getWaitAck(r->mag_bias, r);
+  sensor->getWaitAck(r->accel_bias, r);
+  sensor->getWaitAck(r->mag_cal, r);
+  sensor->getWaitAck(r->accel_cal, r);
+  sensor->getWaitAck(r->gyro_trim, r);
+
+  ROS_INFO_STREAM("MAG_BIASES: " << "\t" << r->mag_bias.get(0) << "\t" << r->mag_bias.get(1) << "\t" << r->mag_bias.get(2));
+  ROS_INFO_STREAM("ACCEL_BIASES: " << "\t" << r->accel_bias.get(0) << "\t" << r->accel_bias.get(1) << "\t" << r->accel_bias.get(2));
+  ROS_INFO_STREAM("GYRO_TRIM: " << "\t" << r->gyro_trim.get(0) << "\t" << r->gyro_trim.get(1) << "\t" << r->gyro_trim.get(2));
+  
+  ROS_INFO_STREAM("Magnetometer Calibration Matrix: ");
+  ROS_INFO_STREAM("\t" << r->mag_cal.get(0) << "\t" << r->mag_cal.get(1) << "\t" << r->mag_cal.get(2));
+  ROS_INFO_STREAM("\t" << r->mag_cal.get(3) << "\t" << r->mag_cal.get(4) << "\t" << r->mag_cal.get(5));
+  ROS_INFO_STREAM("\t" << r->mag_cal.get(6) << "\t" << r->mag_cal.get(7) << "\t" << r->mag_cal.get(8));
+
+  ROS_INFO_STREAM("Accelerometer Calibration Matrix: ");
+  ROS_INFO_STREAM("\t" << r->accel_cal.get(0) << "\t" << r->accel_cal.get(1) << "\t" << r->accel_cal.get(2));
+  ROS_INFO_STREAM("\t" << r->accel_cal.get(3) << "\t" << r->accel_cal.get(4) << "\t" << r->accel_cal.get(5));
+  ROS_INFO_STREAM("\t" << r->accel_cal.get(6) << "\t" << r->accel_cal.get(7) << "\t" << r->accel_cal.get(8));
+}
+
 /**
  * Function generalizes the process of commanding the UM7 via one of its command
  * registers.
@@ -98,49 +132,41 @@ void sendCommand(um7::Comms* sensor, const um7::Accessor<RegT>& reg, std::string
   }
 }
 
+/**
+ * Gets firmware version from um7
+ * @return std::string firmwareVersion
+ */
+std::string getFirmwareVersion(um7::Comms* sensor)
+{
+  um7::Registers registers;
+  const auto reg = registers.cmd_get_firmware_version;
+  ROS_INFO_STREAM("Getting firmware version...");
+  if (!sensor->sendWaitAck(reg, &registers))
+  {
+    throw std::runtime_error("Command to device failed.");
+  }
+  auto temp = reg.get(0);
+  std::reverse(std::begin(temp), std::end(temp));
+  std::string fwVer = std::string(std::begin(temp), std::end(temp));
+  ROS_INFO_STREAM("Firmware version: " << fwVer);
+  return fwVer;
+}
 
 /**
  * Send configuration messages to the UM7, critically, to turn on the value outputs
  * which we require, and inject necessary configuration parameters.
  */
-void configureSensor(um7::Comms* sensor)
+void configureSensor(um7::Comms* sensor, ros::NodeHandle *private_nh)
 {
   um7::Registers r;
+  auto fw = getFirmwareVersion(sensor);
 
-    uint32_t comm_reg = (BAUD_115200 << COM_BAUD_START);
-    r.communication.set(0, comm_reg);
-    if (!sensor->sendWaitAck(r.comrate2))
-    {
-      throw std::runtime_error("Unable to set CREG_COM_SETTINGS.");
-    }
-
-    uint32_t raw_rate = (20 << RATE2_ALL_RAW_START);
-    r.comrate2.set(0, raw_rate);
-    if (!sensor->sendWaitAck(r.comrate2))
-    {
-      throw std::runtime_error("Unable to set CREG_COM_RATES2.");
-    }
-
-    uint32_t proc_rate = (20 << RATE4_ALL_PROC_START);
-    r.comrate4.set(0, proc_rate);
-    if (!sensor->sendWaitAck(r.comrate4))
-    {
-      throw std::runtime_error("Unable to set CREG_COM_RATES4.");
-    }
-
-    uint32_t misc_rate = (20 << RATE5_EULER_START) | (20 << RATE5_QUAT_START);
-    r.comrate5.set(0, misc_rate);
-    if (!sensor->sendWaitAck(r.comrate5))
-    {
-      throw std::runtime_error("Unable to set CREG_COM_RATES5.");
-    }
-
-    uint32_t health_rate = (5 << RATE6_HEALTH_START);  // note:  5 gives 2 hz rate
-    r.comrate6.set(0, health_rate);
-    if (!sensor->sendWaitAck(r.comrate6))
-    {
-      throw std::runtime_error("Unable to set CREG_COM_RATES6.");
-    }
+  uint32_t comm_reg = (BAUD_115200 << COM_BAUD_START);
+  r.communication.set(0, comm_reg);
+  if (!sensor->sendWaitAck(r.comrate2))
+  {
+    throw std::runtime_error("Unable to set CREG_COM_SETTINGS.");
+  }
 
 
   // Options available using parameters)
@@ -148,7 +174,8 @@ void configureSensor(um7::Comms* sensor)
 
   // Optionally disable mag updates in the sensor's EKF.
   bool mag_updates;
-  ros::param::param<bool>("~mag_updates", mag_updates, true);
+  private_nh->param<bool>("mag_updates", mag_updates, true);
+  ROS_ERROR_STREAM("MAG_UPDATES: " << mag_updates);
   if (mag_updates)
   {
     misc_config_reg |= MAG_UPDATES_ENABLED;
@@ -160,7 +187,7 @@ void configureSensor(um7::Comms* sensor)
 
   // Optionally enable quaternion mode .
   bool quat_mode;
-  ros::param::param<bool>("~quat_mode", quat_mode, true);
+  private_nh->param<bool>("quat_mode", quat_mode, true);
   if (quat_mode)
   {
     misc_config_reg |= QUATERNION_MODE_ENABLED;
@@ -169,6 +196,7 @@ void configureSensor(um7::Comms* sensor)
   {
     ROS_WARN("Excluding quaternion mode.");
   }
+  ROS_ERROR_STREAM("misc_config_reg: " << misc_config_reg);
 
   r.misc_config.set(0, misc_config_reg);
   if (!sensor->sendWaitAck(r.misc_config))
@@ -178,8 +206,58 @@ void configureSensor(um7::Comms* sensor)
 
   // Optionally disable performing a zero gyros command on driver startup.
   bool zero_gyros;
-  ros::param::param<bool>("~zero_gyros", zero_gyros, true);
+  private_nh->param<bool>("zero_gyros", zero_gyros, true);
   if (zero_gyros) sendCommand(sensor, r.cmd_zero_gyros, "zero gyroscopes");
+  else ROS_WARN("Gyros will not be zeroed at startup.");
+
+
+  // set the broadcast rate of the device
+  int rate;
+  private_nh->param<int>("update_rate", rate, 20);
+  if (rate < 20 || rate > 255)
+  {
+    ROS_WARN("Potentially unsupported update rate of %d", rate);
+  }
+
+  uint32_t rate_bits = static_cast<uint32_t>(rate);
+  ROS_INFO("Setting update rate to %uHz", rate);
+  uint32_t raw_rate = (rate_bits << RATE2_ALL_RAW_START);
+  r.comrate2.set(0, raw_rate);
+  if (!sensor->sendWaitAck(r.comrate2))
+  {
+    throw std::runtime_error("Unable to set CREG_COM_RATES2.");
+  }
+
+  uint32_t proc_rate = (rate_bits << RATE4_ALL_PROC_START);
+  r.comrate4.set(0, proc_rate);
+  if (!sensor->sendWaitAck(r.comrate4))
+  {
+    throw std::runtime_error("Unable to set CREG_COM_RATES4.");
+  }
+
+
+  uint32_t misc_rate = (rate_bits << RATE5_EULER_START) | (rate_bits << RATE5_QUAT_START);
+  r.comrate5.set(0, misc_rate);
+  if (!sensor->sendWaitAck(r.comrate5))
+  {
+    throw std::runtime_error("Unable to set CREG_COM_RATES5.");
+  }
+
+  uint32_t health_rate = (5 << RATE6_HEALTH_START);  // note:  5 gives 2 hz rate
+  r.comrate6.set(0, health_rate);
+  if (!sensor->sendWaitAck(r.comrate6))
+  {
+    throw std::runtime_error("Unable to set CREG_COM_RATES6.");
+  }
+
+  uint32_t gyro_bias_rate = (rate_bits << RATE6_GYRO_BIAS_START);
+  r.comrate6.set(0, gyro_bias_rate);
+  if (!sensor->sendWaitAck(r.comrate6))
+  {
+    throw std::runtime_error("Unable to set CREG_COM_RATES4.");
+  }
+
+  getRegisters(sensor, &r);
 }
 
 
@@ -197,44 +275,174 @@ bool handleResetService(um7::Comms* sensor,
  * Uses the register accessors to grab data from the IMU, and populate
  * the ROS messages which are output.
  */
-void publishMsgs(um7::Registers& r, ros::NodeHandle* n, const std_msgs::Header& header)
+void publishMsgs(um7::Registers& r, ros::NodeHandle* imu_nh, sensor_msgs::Imu& imu_msg,
+    OutputAxisOption axes, bool use_magnetic_field_msg)
 {
-  static ros::Publisher imu_pub = n->advertise<sensor_msgs::Imu>("imu/data", 1, false);
-  static ros::Publisher mag_pub = n->advertise<geometry_msgs::Vector3Stamped>("imu/mag", 1, false);
-  static ros::Publisher rpy_pub = n->advertise<geometry_msgs::Vector3Stamped>("imu/rpy", 1, false);
-  static ros::Publisher temp_pub = n->advertise<std_msgs::Float32>("imu/temperature", 1, false);
+  static ros::Publisher imu_pub = imu_nh->advertise<sensor_msgs::Imu>("data", 1, false);
+  static ros::Publisher mag_pub;
+  if (use_magnetic_field_msg)
+  {
+    mag_pub = imu_nh->advertise<sensor_msgs::MagneticField>("mag", 1, false);
+  }
+  else
+  {
+    mag_pub = imu_nh->advertise<geometry_msgs::Vector3Stamped>("mag", 1, false);
+  }
+  static ros::Publisher rpy_pub = imu_nh->advertise<geometry_msgs::Vector3Stamped>("rpy", 1, false);
+  static ros::Publisher temp_pub = imu_nh->advertise<std_msgs::Float32>("temperature", 1, false);
+  
+  static ros::Publisher mag_raw_pub = imu_nh->advertise<geometry_msgs::Vector3Stamped>("mag_raw", 1, false);
+  static ros::Publisher gyro_raw_pub = imu_nh->advertise<geometry_msgs::Vector3Stamped>("gyro_raw", 1, false);
+  static ros::Publisher gyro_bias_pub = imu_nh->advertise<geometry_msgs::Vector3Stamped>("gyro_bias", 1, false);
+  static ros::Publisher accel_raw_pub = imu_nh->advertise<geometry_msgs::Vector3Stamped>("accel_raw", 1, false);
+  static ros::Publisher health_pub = imu_nh->advertise<diagnostic_msgs::DiagnosticStatus>("health", 1, false);
+
+  if (gyro_bias_pub.getNumSubscribers() > 0)
+  {
+    geometry_msgs::Vector3Stamped gyro_bias_msg;
+    gyro_bias_msg.header = imu_msg.header;
+    gyro_bias_msg.vector.x = r.gyro_bias.get(0);
+    gyro_bias_msg.vector.y = r.gyro_bias.get(1);
+    gyro_bias_msg.vector.z = r.gyro_bias.get(2);
+    gyro_bias_pub.publish(gyro_bias_msg);
+  }
+
+  if (gyro_raw_pub.getNumSubscribers() > 0)
+  {
+    geometry_msgs::Vector3Stamped gyro_raw_msg;
+    gyro_raw_msg.header = imu_msg.header;
+    gyro_raw_msg.vector.x = r.gyro_raw.get(0);
+    gyro_raw_msg.vector.y = r.gyro_raw.get(1);
+    gyro_raw_msg.vector.z = r.gyro_raw.get(2);
+    gyro_raw_pub.publish(gyro_raw_msg);
+  }
+  if (accel_raw_pub.getNumSubscribers() > 0)
+  {
+    geometry_msgs::Vector3Stamped accel_raw_msg;
+    accel_raw_msg.header = imu_msg.header;
+    accel_raw_msg.vector.x = r.accel_raw.get(0);
+    accel_raw_msg.vector.y = r.accel_raw.get(1);
+    accel_raw_msg.vector.z = r.accel_raw.get(2);
+    accel_raw_pub.publish(accel_raw_msg);
+  }
+  if (mag_raw_pub.getNumSubscribers() > 0)
+  {
+    geometry_msgs::Vector3Stamped mag_raw_msg;
+    mag_raw_msg.header = imu_msg.header;
+    mag_raw_msg.vector.x = r.mag_raw.get(0);
+    mag_raw_msg.vector.y = r.mag_raw.get(1);
+    mag_raw_msg.vector.z = r.mag_raw.get(2);
+    mag_raw_pub.publish(mag_raw_msg);
+  }
+
+  if (health_pub.getNumSubscribers() > 0)
+  {
+    diagnostic_msgs::DiagnosticStatus health_msg;
+    health_msg.level = 0;
+    health_msg.name = "imu";
+    diagnostic_msgs::KeyValue comOvf;
+    diagnostic_msgs::KeyValue accelerometer_norm;
+    diagnostic_msgs::KeyValue magnetometer_norm;
+    diagnostic_msgs::KeyValue accelerometer;
+    diagnostic_msgs::KeyValue gyro;
+    diagnostic_msgs::KeyValue magnet;
+
+    comOvf.key = "COM Overflow";
+    accelerometer_norm.key = "accelerometer norm";
+    magnetometer_norm.key = "magnetometer norm";
+    accelerometer.key = "accelerometer init";
+    gyro.key = "gyro init";
+    magnet.key = "magnet init";
+    auto status_reg = r.status.get(0);
+    comOvf.value = status_reg & HEALTH_COM_OVERFLOW;  // saved as a byte, not a string.
+    accelerometer_norm.value = status_reg & HEALTH_ACCEL_NORM;  // saved as a byte, not a string.
+    magnetometer_norm.value = status_reg & HEALTH_MAG_NORM;  // saved as a byte, not a string.
+    accelerometer.value = status_reg & HEALTH_ACCEL;  // saved as a byte, not a string.
+    gyro.value = status_reg & HEALTH_GYRO;  // saved as a byte, not a string.
+    magnet.value = status_reg & HEALTH_MAG;  // saved as a byte, not a string.
+
+    
+
+    health_msg.values.push_back(comOvf);
+    health_msg.values.push_back(accelerometer_norm);
+    health_msg.values.push_back(magnetometer_norm);
+    health_msg.values.push_back(accelerometer);
+    health_msg.values.push_back(gyro);
+    health_msg.values.push_back(magnet);
+
+    for (size_t i = 0; i < health_msg.values.size(); i++)
+    {
+      if (health_msg.values[i].value.at(0)) {
+        // ROS_INFO_STREAM("" << health_msg.values[i].key << " is " << std::hex << static_cast<int>(health_msg.values[i].value.c_str()[0]) << " <<");
+        health_msg.level |= (1 << i);
+      }
+    }  
+    health_pub.publish(health_msg);
+  }
 
   if (imu_pub.getNumSubscribers() > 0)
   {
-    sensor_msgs::Imu imu_msg;
-    imu_msg.header = header;
+    switch (axes)
+    {
+      case OutputAxisOptions::ENU:
+      {
+        // body-fixed frame NED to ENU: (x y z)->(x -y -z) or (w x y z)->(x -y -z w)
+        // world frame      NED to ENU: (x y z)->(y  x -z) or (w x y z)->(y  x -z w)
+        // world frame
+        imu_msg.orientation.w =  r.quat.get_scaled(0);
+        imu_msg.orientation.x =  r.quat.get_scaled(1);
+        imu_msg.orientation.y = -r.quat.get_scaled(2);
+        imu_msg.orientation.z = -r.quat.get_scaled(3);
 
-    // IMU outputs [w,x,y,z], convert to [x,y,z,w] & transform to ROS axes
-    imu_msg.orientation.x =  r.quat.get_scaled(1);
-    imu_msg.orientation.y = -r.quat.get_scaled(2);
-    imu_msg.orientation.z = -r.quat.get_scaled(3);
-    imu_msg.orientation.w = r.quat.get_scaled(0);
+        // body-fixed frame
+        imu_msg.angular_velocity.x =  r.gyro.get_scaled(0);
+        imu_msg.angular_velocity.y = -r.gyro.get_scaled(1);
+        imu_msg.angular_velocity.z = -r.gyro.get_scaled(2);
 
-    // Covariance of attitude.  set to constant default or parameter values
-    imu_msg.orientation_covariance[0] = covar[0];
-    imu_msg.orientation_covariance[1] = covar[1];
-    imu_msg.orientation_covariance[2] = covar[2];
-    imu_msg.orientation_covariance[3] = covar[3];
-    imu_msg.orientation_covariance[4] = covar[4];
-    imu_msg.orientation_covariance[5] = covar[5];
-    imu_msg.orientation_covariance[6] = covar[6];
-    imu_msg.orientation_covariance[7] = covar[7];
-    imu_msg.orientation_covariance[8] = covar[8];
+        // body-fixed frame
+        imu_msg.linear_acceleration.x =  r.accel.get_scaled(0);
+        imu_msg.linear_acceleration.y = -r.accel.get_scaled(1);
+        imu_msg.linear_acceleration.z = -r.accel.get_scaled(2);
+        break;
+      }
+      case OutputAxisOptions::ROBOT_FRAME:
+      {
+        // body-fixed frame
+        imu_msg.orientation.w = -r.quat.get_scaled(0);
+        imu_msg.orientation.x = -r.quat.get_scaled(1);
+        imu_msg.orientation.y =  r.quat.get_scaled(2);
+        imu_msg.orientation.z =  r.quat.get_scaled(3);
 
-    // Angular velocity.  transform to ROS axes
-    imu_msg.angular_velocity.x =  r.gyro.get_scaled(0);
-    imu_msg.angular_velocity.y = -r.gyro.get_scaled(1);
-    imu_msg.angular_velocity.z = -r.gyro.get_scaled(2);
+        // body-fixed frame
+        imu_msg.angular_velocity.x =  r.gyro.get_scaled(0);
+        imu_msg.angular_velocity.y = -r.gyro.get_scaled(1);
+        imu_msg.angular_velocity.z = -r.gyro.get_scaled(2);
 
-    // Linear accel.  transform to ROS axes
-    imu_msg.linear_acceleration.x =  r.accel.get_scaled(0);
-    imu_msg.linear_acceleration.y = -r.accel.get_scaled(1);
-    imu_msg.linear_acceleration.z = -r.accel.get_scaled(2);
+        // body-fixed frame
+        imu_msg.linear_acceleration.x =  r.accel.get_scaled(0);
+        imu_msg.linear_acceleration.y = -r.accel.get_scaled(1);
+        imu_msg.linear_acceleration.z = -r.accel.get_scaled(2);
+        break;
+      }
+      case OutputAxisOptions::DEFAULT:
+      {
+        imu_msg.orientation.w = r.quat.get_scaled(0);
+        imu_msg.orientation.x = r.quat.get_scaled(1);
+        imu_msg.orientation.y = r.quat.get_scaled(2);
+        imu_msg.orientation.z = r.quat.get_scaled(3);
+
+        imu_msg.angular_velocity.x = r.gyro.get_scaled(0);
+        imu_msg.angular_velocity.y = r.gyro.get_scaled(1);
+        imu_msg.angular_velocity.z = r.gyro.get_scaled(2);
+
+        imu_msg.linear_acceleration.x = r.accel.get_scaled(0);
+        imu_msg.linear_acceleration.y = r.accel.get_scaled(1);
+        imu_msg.linear_acceleration.z = r.accel.get_scaled(2);
+        break;
+      }
+      default:
+        ROS_ERROR("OuputAxes enum value invalid");
+    }
 
     imu_pub.publish(imu_msg);
   }
@@ -242,22 +450,112 @@ void publishMsgs(um7::Registers& r, ros::NodeHandle* n, const std_msgs::Header& 
   // Magnetometer.  transform to ROS axes
   if (mag_pub.getNumSubscribers() > 0)
   {
-    geometry_msgs::Vector3Stamped mag_msg;
-    mag_msg.header = header;
-    mag_msg.vector.x =  r.mag.get_scaled(0);
-    mag_msg.vector.y = -r.mag.get_scaled(1);
-    mag_msg.vector.z = -r.mag.get_scaled(2);
-    mag_pub.publish(mag_msg);
+    if (use_magnetic_field_msg)
+    {
+      sensor_msgs::MagneticField mag_msg;
+      mag_msg.header = imu_msg.header;
+
+      switch (axes)
+      {
+        case OutputAxisOptions::ENU:
+        {
+          mag_msg.magnetic_field.x = r.mag.get_scaled(1);
+          mag_msg.magnetic_field.y = r.mag.get_scaled(0);
+          mag_msg.magnetic_field.z = -r.mag.get_scaled(2);
+          break;
+        }
+        case OutputAxisOptions::ROBOT_FRAME:
+        {
+          // body-fixed frame
+          mag_msg.magnetic_field.x =  r.mag.get_scaled(0);
+          mag_msg.magnetic_field.y = -r.mag.get_scaled(1);
+          mag_msg.magnetic_field.z = -r.mag.get_scaled(2);
+          break;
+        }
+        case OutputAxisOptions::DEFAULT:
+        {
+          mag_msg.magnetic_field.x = r.mag.get_scaled(0);
+          mag_msg.magnetic_field.y = r.mag.get_scaled(1);
+          mag_msg.magnetic_field.z = r.mag.get_scaled(2);
+          break;
+        }
+        default:
+          ROS_ERROR("OuputAxes enum value invalid");
+      }
+
+      mag_pub.publish(mag_msg);
+    }
+    else
+    {
+      geometry_msgs::Vector3Stamped mag_msg;
+      mag_msg.header = imu_msg.header;
+
+      switch (axes)
+      {
+        case OutputAxisOptions::ENU:
+        {
+          mag_msg.vector.x = r.mag.get_scaled(1);
+          mag_msg.vector.y = r.mag.get_scaled(0);
+          mag_msg.vector.z = -r.mag.get_scaled(2);
+          break;
+        }
+        case OutputAxisOptions::ROBOT_FRAME:
+        {
+          // body-fixed frame
+          mag_msg.vector.x =  r.mag.get_scaled(0);
+          mag_msg.vector.y = -r.mag.get_scaled(1);
+          mag_msg.vector.z = -r.mag.get_scaled(2);
+          break;
+        }
+        case OutputAxisOptions::DEFAULT:
+        {
+          mag_msg.vector.x = r.mag.get_scaled(0);
+          mag_msg.vector.y = r.mag.get_scaled(1);
+          mag_msg.vector.z = r.mag.get_scaled(2);
+          break;
+        }
+        default:
+          ROS_ERROR("OuputAxes enum value invalid");
+      }
+
+      mag_pub.publish(mag_msg);
+    }
   }
 
   // Euler attitudes.  transform to ROS axes
   if (rpy_pub.getNumSubscribers() > 0)
   {
     geometry_msgs::Vector3Stamped rpy_msg;
-    rpy_msg.header = header;
-    rpy_msg.vector.x =  r.euler.get_scaled(0);
-    rpy_msg.vector.y = -r.euler.get_scaled(1);
-    rpy_msg.vector.z = -r.euler.get_scaled(2);
+    rpy_msg.header = imu_msg.header;
+
+    switch (axes)
+    {
+      case OutputAxisOptions::ENU:
+      {
+        // world frame
+        rpy_msg.vector.x = r.euler.get_scaled(1);
+        rpy_msg.vector.y = r.euler.get_scaled(0);
+        rpy_msg.vector.z = -r.euler.get_scaled(2);
+        break;
+      }
+      case OutputAxisOptions::ROBOT_FRAME:
+      {
+        rpy_msg.vector.x =  r.euler.get_scaled(0);
+        rpy_msg.vector.y = -r.euler.get_scaled(1);
+        rpy_msg.vector.z = -r.euler.get_scaled(2);
+        break;
+      }
+      case OutputAxisOptions::DEFAULT:
+      {
+        rpy_msg.vector.x = r.euler.get_scaled(0);
+        rpy_msg.vector.y = r.euler.get_scaled(1);
+        rpy_msg.vector.z = r.euler.get_scaled(2);
+        break;
+      }
+      default:
+        ROS_ERROR("OuputAxes enum value invalid");
+    }
+
     rpy_pub.publish(rpy_msg);
   }
 
@@ -270,7 +568,6 @@ void publishMsgs(um7::Registers& r, ros::NodeHandle* n, const std_msgs::Header& 
   }
 }
 
-
 /**
  * Node entry-point. Handles ROS setup, and serial port connection/reconnection.
  */
@@ -281,8 +578,10 @@ int main(int argc, char **argv)
   // Load parameters from private node handle.
   std::string port;
   int32_t baud;
-  ros::param::param<std::string>("~port", port, "/dev/ttyUSB0");
-  ros::param::param<int32_t>("~baud", baud, 115200);
+
+  ros::NodeHandle imu_nh("imu"), private_nh("~");
+  private_nh.param<std::string>("port", port, "/dev/ttyUSB0");
+  private_nh.param<int32_t>("baud", baud, 115200);
 
   serial::Serial ser;
   ser.setPort(port);
@@ -290,30 +589,61 @@ int main(int argc, char **argv)
   serial::Timeout to = serial::Timeout(50, 50, 0, 50, 0);
   ser.setTimeout(to);
 
-  ros::NodeHandle n;
+  sensor_msgs::Imu imu_msg;
+  double linear_acceleration_stdev, angular_velocity_stdev;
+  private_nh.param<std::string>("frame_id", imu_msg.header.frame_id, "imu_link");
+  // Defaults obtained experimentally from hardware, no device spec exists
+  private_nh.param<double>("linear_acceleration_stdev", linear_acceleration_stdev, (4.0 * 1e-3f * 9.80665));
+  private_nh.param<double>("angular_velocity_stdev", angular_velocity_stdev, (0.06 * 3.14159 / 180.0));
 
-  std_msgs::Header header;
-  ros::param::param<std::string>("~frame_id", header.frame_id, "imu_link");
+  double linear_acceleration_cov = linear_acceleration_stdev * linear_acceleration_stdev;
+  double angular_velocity_cov = angular_velocity_stdev * angular_velocity_stdev;
 
-  // Initialize covariance. The UM7 sensor does not provide covariance values so,
-  //   by default, this driver provides a covariance array of all zeros indicating
-  //   "covariance unknown" as advised in sensor_msgs/Imu.h.
-  // This param allows the user to specify alternate covariance values if needed.
+  // From the UM7 datasheet for the dynamic accuracy from the EKF.
+  double orientation_x_stdev, orientation_y_stdev, orientation_z_stdev;
+  private_nh.param<double>("orientation_x_stdev", orientation_x_stdev, (3.0 * 3.14159 / 180.0));
+  private_nh.param<double>("orientation_y_stdev", orientation_y_stdev, (3.0 * 3.14159 / 180.0));
+  private_nh.param<double>("orientation_z_stdev", orientation_z_stdev, (5.0 * 3.14159 / 180.0));
 
-  std::string covariance;
-  char cov[200];
-  char *ptr1;
+  double orientation_x_covar = orientation_x_stdev * orientation_x_stdev;
+  double orientation_y_covar = orientation_y_stdev * orientation_y_stdev;
+  double orientation_z_covar = orientation_z_stdev * orientation_z_stdev;
 
-  ros::param::param<std::string>("~covariance", covariance, "0 0 0 0 0 0 0 0 0");
-  snprintf(cov, sizeof(cov), "%s", covariance.c_str());
-
-  char* p = strtok_r(cov, " ", &ptr1);           // point to first value
-  for (int iter = 0; iter < 9; iter++)
+  // Enable converting from NED to ENU by default
+  bool tf_ned_to_enu;
+  bool orientation_in_robot_frame;
+  private_nh.param<bool>("tf_ned_to_enu", tf_ned_to_enu, true);
+  private_nh.param<bool>("orientation_in_robot_frame", orientation_in_robot_frame, false);
+  OutputAxisOption axes = OutputAxisOptions::DEFAULT;
+  if (tf_ned_to_enu && orientation_in_robot_frame)
   {
-    if (p) covar[iter] = atof(p);                // covar[] is global var
-    else  covar[iter] = 0.0;
-    p = strtok_r(NULL, " ", &ptr1);              // point to next value (nil if none)
+    ROS_ERROR("Requested IMU data in two separate frames.");
   }
+  else if (tf_ned_to_enu)
+  {
+    axes = OutputAxisOptions::ENU;
+  }
+  else if (orientation_in_robot_frame)
+  {
+    axes = OutputAxisOptions::ROBOT_FRAME;
+  }
+
+  // Use MagneticField message rather than Vector3Stamped.
+  bool use_magnetic_field_msg;
+  private_nh.param<bool>("use_magnetic_field_msg", use_magnetic_field_msg, false);
+
+  // These values do not need to be converted
+  imu_msg.linear_acceleration_covariance[0] = linear_acceleration_cov;
+  imu_msg.linear_acceleration_covariance[4] = linear_acceleration_cov;
+  imu_msg.linear_acceleration_covariance[8] = linear_acceleration_cov;
+
+  imu_msg.angular_velocity_covariance[0] = angular_velocity_cov;
+  imu_msg.angular_velocity_covariance[4] = angular_velocity_cov;
+  imu_msg.angular_velocity_covariance[8] = angular_velocity_cov;
+
+  imu_msg.orientation_covariance[0] = orientation_x_covar;
+  imu_msg.orientation_covariance[4] = orientation_y_covar;
+  imu_msg.orientation_covariance[8] = orientation_z_covar;
 
   // Real Time Loop
   bool first_failure = true;
@@ -323,20 +653,20 @@ int main(int argc, char **argv)
     {
       ser.open();
     }
-    catch(const serial::IOException& e)
+    catch (const serial::IOException& e)
     {
-        ROS_DEBUG("um7_driver ver %s unable to connect to port.", VERSION);
+        ROS_WARN("um7_driver was unable to connect to port %s.", port.c_str());
     }
     if (ser.isOpen())
     {
-      ROS_INFO("um7_driver ver %s connected to serial port.", VERSION);
+      ROS_INFO("um7_driver successfully connected to serial port %s.", port.c_str());
       first_failure = true;
       try
       {
         um7::Comms sensor(&ser);
-        configureSensor(&sensor);
+        configureSensor(&sensor, &private_nh);
         um7::Registers registers;
-        ros::ServiceServer srv = n.advertiseService<um7::Reset::Request, um7::Reset::Response>(
+        ros::ServiceServer srv = imu_nh.advertiseService<um7::Reset::Request, um7::Reset::Response>(
             "reset", boost::bind(handleResetService, &sensor, _1, _2));
 
         while (ros::ok())
@@ -344,8 +674,9 @@ int main(int argc, char **argv)
           // triggered by arrival of last message packet
           if (sensor.receive(&registers) == TRIGGER_PACKET)
           {
-            header.stamp = ros::Time::now();
-            publishMsgs(registers, &n, header);
+            // Triggered by arrival of final message in group.
+            imu_msg.header.stamp = ros::Time::now();
+            publishMsgs(registers, &imu_nh, imu_msg, axes, use_magnetic_field_msg);
             ros::spinOnce();
           }
         }
@@ -361,7 +692,7 @@ int main(int argc, char **argv)
     else
     {
       ROS_WARN_STREAM_COND(first_failure, "Could not connect to serial device "
-          << port << ". Trying again every 1 second.");
+                           << port << ". Trying again every 1 second.");
       first_failure = false;
       ros::Duration(1.0).sleep();
     }

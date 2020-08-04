@@ -1,0 +1,16 @@
+<launch>
+    <node name="imu" pkg="um7" type="um7_driver" output="screen" respawn="true">
+        <rosparam param="quat_mode">True</rosparam>
+        <rosparam param="tf_ned_to_enu">False</rosparam>
+        <rosparam param="mag_updates">True</rosparam>
+        <rosparam param="use_magnetic_field_msg">True</rosparam>
+        <rosparam param="zero_gyros">False</rosparam>
+        <rosparam param="update_rate">100</rosparam>
+        <rosparam param="port">/dev/ttyUSB0</rosparam>
+    </node>
+    <node name="rviz" pkg="rviz" type="rviz" output="screen" args="-d $(find um7)/launch/conf.rviz" >
+    </node>
+    <node  name="tf_map" pkg="tf" type="static_transform_publisher" args="0 0 0 0 0 0 1 world map 100" />
+    <node  name="tf_base" pkg="tf" type="static_transform_publisher" args="0 0 0 0 0 0 1 map base_link 100" />
+    <node  name="tf_imu" pkg="tf" type="static_transform_publisher" args="0 0 0 0 0 0 1 base_link imu_link 100" />
+</launch>
